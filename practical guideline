@@ -1,0 +1,629 @@
+# R code follows proposed practical guideline
+# each step can be run independently 
+
+# read in data frame "obs.data.original" with columns "delta1", "delta2", "Y1", and "Y2"  
+remove(list=ls())
+
+set.seed(10600)
+tol.equal=1e-5
+tol.EM=1e-5
+tol.NR=1e-6
+theta.start=0.5
+
+##################################################################################
+##################################################################################
+######## step 1: score test ######################################################
+##################################################################################
+##################################################################################
+
+# R fct for score test 
+score.test.fct<-function(obs.data.original){
+  
+n<-dim(obs.data.original)[1]
+score.vector<-vector() 
+for (j in 1:101){
+  
+  if (j==1){
+    obs.data<-obs.data.original
+  } else{
+    selected<-sample(seq(1:n), n, replace = TRUE)
+    obs.data<-obs.data.original[selected,]
+  }
+  
+  Y1<-obs.data$Y1
+  Y2<-obs.data$Y2
+  delta1<-obs.data$delta1
+  delta2<-obs.data$delta2
+  
+  ill.data<-obs.data[obs.data$delta1==1,]
+  ill.data.sort<-ill.data[order(ill.data$Y1),]
+  unique.ill.t<-unique(ill.data.sort$Y1) # unique function extract unique elements (1123)->(123)
+  n.unique.ill.t<-length(unique.ill.t)
+
+  die.data<-obs.data[obs.data$delta2==1,]
+  die.data.sort<-die.data[order(die.data$Y2),]
+  unique.die.t<-unique(die.data.sort$Y2)
+  n.unique.die.t<-length(unique.die.t)
+
+  ##### NPMLE Lambda01, Lambda02, lambda01, lambda02 #####
+  Lambda01.fct<-function(t,lambda01.hat){sum(lambda01.hat[unique.ill.t-t<tol.equal])}
+  Lambda02.fct<-function(t,lambda02.hat){sum(lambda02.hat[unique.die.t-t<tol.equal])}
+  
+  lambda01.fct<-function(t,gamma.post){if(sum(delta1*(abs(Y1-t)<=tol.equal))>tol.equal)
+    return(sum(delta1*(abs(Y1-t)<tol.equal))/sum(gamma.post*as.numeric(Y1-t>(-tol.equal))))
+    else 0}  
+  lambda02.fct<-function(t,gamma.post){if(sum(delta2*(abs(Y2-t)<=tol.equal))>tol.equal)
+    return(sum(delta2*(abs(Y2-t)<tol.equal))/sum(gamma.post*as.numeric(Y2-t>(-tol.equal))))
+    else 0}
+  
+  ##### initial values of lambda01, lambda02, theta.hat #####
+  d.ill.j<-sapply(unique.ill.t, function(t){sum(delta1*(abs(Y1-t)<tol.equal))})
+  y.ill.j<-sapply(unique.ill.t, function(t){sum(as.numeric(Y1-t>(-tol.equal)))})
+  lambda01.start<-d.ill.j/y.ill.j
+  
+  d.die.j<-sapply(unique.die.t, function(t){sum(delta2*(abs(Y2-t)<tol.equal))})
+  y.die.j<-sapply(unique.die.t, function(t){sum(as.numeric(Y2-t>(-tol.equal)))})
+  lambda02.start<-d.die.j/y.die.j 
+  
+  lambda01.hat<-lambda01.start  
+  lambda02.hat<-lambda02.start
+  
+  theta.hat<-theta.start
+  diff2<-10
+  EM.iter<-1
+  
+  cat("\n Start EM-iteration \n")
+  while (diff2 > tol.EM & EM.iter< 3000){# start EM-loop
+    
+    ######################################### E step #########################################
+    ##### gamma post and log gamma post #####
+    a<-delta1+delta2+1/theta.hat
+    b<-1/theta.hat+sapply(Y1,Lambda01.fct,lambda01.hat=lambda01.hat)+
+      sapply(Y2,Lambda02.fct,lambda02.hat=lambda02.hat)
+    
+    gamma.post<-a/b 
+    log.gamma.post<-digamma(a)-log(b)
+    
+    ######################################### M step #########################################
+    ##### lambda01.hat.next, lambda02.hat.next only at event times #####
+    lambda01.hat.next<-sapply(unique.ill.t,lambda01.fct,gamma.post=gamma.post)
+    lambda02.hat.next<-sapply(unique.die.t,lambda02.fct,gamma.post=gamma.post)
+    
+    ##### theta.hat.next #####
+    B<-mean(log.gamma.post-gamma.post);  B.star<-B+1
+    
+    alpha.fct<-function(B.star){
+      if ((-9-12*B.star)>=tol.equal) 
+        return ((-3-sqrt(-9-12*B.star))/(12*B.star))
+      else return(-3/(12*B.star))
+    }
+    
+    alpha.tmp<-alpha.fct(B.star)
+    #alpha.tmp<-(-3-sqrt(-9-12*B.star))/(12*B.star)
+    
+    diff1<-10;                      
+    while (diff1>tol.NR){                            ### start NR-loop
+      U.alpha<- log(alpha.tmp)+1-digamma(alpha.tmp) + B
+      U.alpha.prime<- 1/alpha.tmp-trigamma(alpha.tmp)
+      step.alpha<-U.alpha/U.alpha.prime
+      
+      while(alpha.tmp-step.alpha<tol.equal){
+        step.alpha<-step.alpha/2
+      }
+      
+      alpha.tmp<-alpha.tmp-step.alpha
+      diff1<-abs(step.alpha)+abs(U.alpha)
+    }	                                               ### end of NR-loop
+    
+    theta.hat.next<-1/alpha.tmp
+    
+    diff2<-max(abs((lambda01.hat-lambda01.hat.next)/lambda01.hat))+max(abs((lambda02.hat-lambda02.hat.next)/lambda02.hat))+abs(theta.hat.next-theta.hat)
+    #diff2<-theta.hat.next-theta.hat
+    
+    
+    margin.like<-sum(d.ill.j*log(lambda01.hat.next))+sum(d.die.j*log(lambda02.hat.next))+
+      sum(delta1*delta2*log(1+theta.hat.next))-
+      sum((1/theta.hat.next+delta1+delta2)*log(1+theta.hat.next*(sapply(Y1,Lambda01.fct,lambda01.hat=lambda01.hat.next)+
+                                                                   sapply(Y2,Lambda02.fct,lambda02.hat=lambda02.hat.next))))
+    
+    score.beta0<-sum(delta1*delta2)+(-1)*sum((1/theta.hat.next+delta1+delta2)*theta.hat.next*delta1*(sapply(Y2,Lambda02.fct,lambda02.hat=lambda02.hat.next)-sapply(Y1,Lambda02.fct,lambda02.hat=lambda02.hat.next))/
+                                               (1+theta.hat.next*(sapply(Y1,Lambda01.fct,lambda01.hat=lambda01.hat.next)+sapply(Y1,Lambda02.fct,lambda02.hat=lambda02.hat.next)+
+                                                                    delta1*(sapply(Y2,Lambda02.fct,lambda02.hat=lambda02.hat.next)- sapply(Y1,Lambda02.fct,lambda02.hat=lambda02.hat.next))  )))                                                                                                    
+    
+    cat("\n iteration-",EM.iter,": margin.like=", margin.like, ", theta=", theta.hat.next, ", B=", B, sep="")
+    
+    EM.iter<-EM.iter+1;
+    theta.hat<-theta.hat.next
+    lambda01.hat<-lambda01.hat.next
+    lambda02.hat<-lambda02.hat.next
+    
+  }#End of EM-loop
+  
+  cat("\n********************* Finish EM *********************\n") 
+  
+  score.vector[j]<-score.beta0
+
+} #End of bootstrap loop
+
+stat<-score.vector[1]/sd(score.vector[-1])
+pval<-2*(1-pnorm(abs(stat)))
+
+cat("P value for score test is", pval)
+invisible(pval)
+}
+
+#pval<-score.test.fct(obs.data.original)
+#pval
+
+##################################################################################
+##################################################################################
+# Step 2.1: if p>.05 then restricted model is used to obtain NPMLE ###############
+##################################################################################
+##################################################################################
+if (pval>0.05) {
+  print("Since p value > 0.05, we proceed with restricted GCMM to obtain NPMLE.")
+}
+
+# R fct for NPMLE in restricted GFCMM
+
+NPMLE.restricted.fct<-function(obs.data.original){
+  
+obs.data<-obs.data.original
+Y1<-obs.data$Y1
+Y2<-obs.data$Y2
+delta1<-obs.data$delta1
+delta2<-obs.data$delta2
+
+ill.data<-obs.data[obs.data$delta1==1,]
+ill.data.sort<-ill.data[order(ill.data$Y1),]
+unique.ill.t<-unique(ill.data.sort$Y1)
+n.unique.ill.t<-length(unique.ill.t)
+
+die.data<-obs.data[obs.data$delta2==1,]
+die.data.sort<-die.data[order(die.data$Y2),]
+unique.die.t<-unique(die.data.sort$Y2)
+n.unique.die.t<-length(unique.die.t)
+
+##### non-parametric Lambda01, Lambda02, lambda01, lambda02 #####
+Lambda01.fct<-function(t,lambda01.hat){sum(lambda01.hat[unique.ill.t-t<tol.equal])}
+Lambda02.fct<-function(t,lambda02.hat){sum(lambda02.hat[unique.die.t-t<tol.equal])}
+
+lambda01.fct<-function(t,gamma.post){if(sum(delta1*(abs(Y1-t)<=tol.equal))>tol.equal)
+  return(sum(delta1*(abs(Y1-t)<tol.equal))/sum(gamma.post*as.numeric(Y1-t>(-tol.equal))))
+  else 0}  
+lambda02.fct<-function(t,gamma.post){if(sum(delta2*(abs(Y2-t)<=tol.equal))>tol.equal)
+  return(sum(delta2*(abs(Y2-t)<tol.equal))/sum(gamma.post*as.numeric(Y2-t>(-tol.equal))))
+  else 0}
+
+##### initial values of lambda01, lambda02, theta.hat #####
+d.ill.j<-sapply(unique.ill.t, function(t){sum(delta1*(abs(Y1-t)<tol.equal))})
+y.ill.j<-sapply(unique.ill.t, function(t){sum(as.numeric(Y1-t>(-tol.equal)))})
+lambda01.start<-d.ill.j/y.ill.j
+
+d.die.j<-sapply(unique.die.t, function(t){sum(delta2*(abs(Y2-t)<tol.equal))})
+y.die.j<-sapply(unique.die.t, function(t){sum(as.numeric(Y2-t>(-tol.equal)))})
+lambda02.start<-d.die.j/y.die.j  
+
+
+lambda01.hat<-lambda01.start  
+lambda02.hat<-lambda02.start
+
+theta.hat<-theta.start
+diff2<-10
+EM.iter<-1
+
+cat("\n Start EM-iteration \n")
+while (diff2>tol.EM & EM.iter<3000){# start EM-loop
+  
+  ######################################### E step #########################################
+  ##### gamma post and log gamma post #####
+  a<-delta1+delta2+1/theta.hat
+  b<-1/theta.hat+sapply(Y1,Lambda01.fct,lambda01.hat=lambda01.hat)+
+    sapply(Y2,Lambda02.fct,lambda02.hat=lambda02.hat)
+  
+  gamma.post<-a/b 
+  log.gamma.post<-digamma(a)-log(b)
+  
+  ######################################### M step #########################################
+  ##### lambda01.hat.next, lambda02.hat.next only at event times #####
+  lambda01.hat.next<-sapply(unique.ill.t,lambda01.fct,gamma.post=gamma.post)
+  lambda02.hat.next<-sapply(unique.die.t,lambda02.fct,gamma.post=gamma.post)
+  
+  ##### theta.hat.next
+  B<-mean(log.gamma.post-gamma.post);  B.star<-B+1
+  
+  alpha.fct<-function(B.star){
+    if ((-9-12*B.star)>=tol.equal) 
+      return ((-3-sqrt(-9-12*B.star))/(12*B.star))
+    else return(-3/(12*B.star))
+  }
+  
+  alpha.tmp<-alpha.fct(B.star)
+  #alpha.tmp<-(-3-sqrt(-9-12*B.star))/(12*B.star)
+  
+  diff1<-10;                      
+  while (diff1>tol.NR){                            ### start NR-loop
+    U.alpha<- log(alpha.tmp)+1-digamma(alpha.tmp) + B
+    U.alpha.prime<- 1/alpha.tmp-trigamma(alpha.tmp)
+    step.alpha<-U.alpha/U.alpha.prime
+    
+    while(alpha.tmp-step.alpha<tol.equal){
+      step.alpha<-step.alpha/2
+    }
+    
+    alpha.tmp<-alpha.tmp-step.alpha
+    diff1<-abs(step.alpha)+abs(U.alpha)
+  }	                                               ### end of NR-loop
+  
+  theta.hat.next<-1/alpha.tmp
+  
+  diff2<-max(abs((lambda01.hat-lambda01.hat.next)/lambda01.hat))+max(abs((lambda02.hat-lambda02.hat.next)/lambda02.hat))+abs(theta.hat.next-theta.hat)
+  #diff2<-theta.hat.next-theta.hat
+  
+  ####### print #################### 
+  margin.like.next<-sum(d.ill.j*log(lambda01.hat.next))+sum(d.die.j*log(lambda02.hat.next))+
+    sum(delta1*delta2*log(1+theta.hat.next))-
+    sum((1/theta.hat.next+delta1+delta2)*log(1+theta.hat.next*(sapply(Y1,Lambda01.fct,lambda01.hat=lambda01.hat.next)
+                                                               +sapply(Y2,Lambda02.fct,lambda02.hat=lambda02.hat.next))))
+  
+  cat("\n iteration-",EM.iter,": margin.like=", margin.like.next, ", theta=", theta.hat.next, sep="")
+  
+  EM.iter<-EM.iter+1;
+  theta.hat<-theta.hat.next
+  lambda01.hat<-lambda01.hat.next
+  lambda02.hat<-lambda02.hat.next
+  margin.like.hat<-margin.like.next
+  
+}#End of EM-loop
+
+
+restricted.output<-list("theta"=theta.hat,
+             "lambda01"=lambda01.hat,"unique.ill.t"=unique.ill.t,
+             "lambda02"=lambda02.hat,"unique.die.t"=unique.die.t)
+
+invisible(restricted.output)
+}
+
+#NPMLE.restricted<-NPMLE.restricted.fct(obs.data.original)
+#NPMLE.restricted
+
+##################################################################################
+##################################################################################
+# Step 2.2: if p<.05 then plot profile likelhood under unrestricted model ########
+##################################################################################
+##################################################################################
+
+# R fct 
+
+profile.unrestricted.fct<-function(obs.data.original){
+  
+obs.data<-obs.data.original
+n<-dim(obs.data)[1]
+
+Y1<-obs.data$Y1
+Y2<-obs.data$Y2
+delta1<-obs.data$delta1
+delta2<-obs.data$delta2
+
+ill.data<-obs.data[obs.data$delta1==1,]
+ill.data.sort<-ill.data[order(ill.data$Y1),]
+unique.ill.t<-unique(ill.data.sort$Y1)
+n.unique.ill.t<-length(unique.ill.t)
+
+die.noill.data<-obs.data[obs.data$delta2==1 & obs.data$delta1==0,]
+die.noill.data.sort<-die.noill.data[order(die.noill.data$Y2),]
+unique.die.noill.t<-unique(die.noill.data.sort$Y2)
+n.unique.die.noill.t<-length(unique.die.noill.t)
+
+die.withill.data<-obs.data[obs.data$delta2==1 & obs.data$delta1==1,]
+die.withill.data.sort<-die.withill.data[order(die.withill.data$Y2),]
+unique.die.withill.t<-unique(die.withill.data.sort$Y2)
+unique.ill.withdie.t<-unique(die.withill.data.sort$Y1)
+n.unique.die.withill.t<-length(unique.die.withill.t)
+
+
+##### non-parametric Lambda01, Lambda02, Lambda03, lambda01, lambda02, lambda03 #####
+
+Lambda01.fct<-function(t,lambda01.hat){sum(lambda01.hat[unique.ill.t-t        <tol.equal])}
+Lambda02.fct<-function(t,lambda02.hat){sum(lambda02.hat[unique.die.noill.t-t  <tol.equal])}
+Lambda03.fct<-function(t,lambda03.hat){sum(lambda03.hat[unique.die.withill.t-t<tol.equal])}
+
+lambda01.fct<-function(t,gamma.post){if(sum(delta1*(abs(Y1-t)<=tol.equal))>tol.equal)
+  return(sum(delta1*(abs(Y1-t)<=tol.equal))/sum(gamma.post*as.numeric(Y1>=t)))
+  else 0}  
+lambda02.fct<-function(t,gamma.post){if(sum((1-delta1)*delta2*(abs(Y2-t)<=tol.equal))>tol.equal)
+  return(sum( (1-delta1)*delta2*(abs(Y2-t)<=tol.equal) )/sum( gamma.post*as.numeric(Y1>=t)) )
+  else 0}
+lambda03.fct<-function(t,gamma.post){if(sum(delta1*delta2*(abs(Y2-t)<=tol.equal))>tol.equal)
+  return(sum( delta1*delta2*(abs(Y2-t)<=tol.equal) )/sum(gamma.post*delta1*(as.numeric(Y2>=t)-as.numeric(Y1>=t)) ) )
+  else 0}
+
+##### initial values of lambda01, lambda02, theta.hat #####
+d.ill.j<-sapply(unique.ill.t, function(t){sum(delta1*(abs(Y1-t)<tol.equal))})
+y.ill.j<-sapply(unique.ill.t, function(t){sum(as.numeric(Y1-t>(-tol.equal)))})
+lambda01.start<-d.ill.j/y.ill.j
+
+Y2.noill <-Y2[delta1==0]
+d.die.noill.j<-sapply(unique.die.noill.t, function(t){sum((1-delta1)*delta2*(abs(Y2-t)<=tol.equal))})
+y.die.noill.j<-sapply(unique.die.noill.t, function(t){sum(as.numeric(Y2.noill-t>(-tol.equal)))})
+lambda02.start<-d.die.noill.j/y.die.noill.j
+
+Y2.withill <-Y2[delta1==1]
+d.die.withill.j<-sapply(unique.die.withill.t, function(t){sum(delta1*delta2*(abs(Y2-t)<=tol.equal))})
+y.die.withill.j<-sapply(unique.die.withill.t, function(t){sum(as.numeric(Y2.withill-t>(-tol.equal)))})
+lambda03.start<-d.die.withill.j/y.die.withill.j
+
+lambda01.hat<-lambda01.start
+lambda02.hat<-lambda02.start
+lambda03.hat<-lambda03.start
+
+theta.hat<-seq(0.001,3.001,0.05)
+
+output<-matrix(rep(0,2*length(theta.hat)),nrow=2,ncol=length(theta.hat))
+
+for (k in 1:length(theta.hat)){
+  
+  diff2<-10 
+  EM.iter<-1
+  
+  cat("\n Start EM-iteration \n")
+  while (diff2>tol.EM & EM.iter<100){# start EM-loop
+    
+    ######################################### E step #########################################
+    ##### gamma post and log gamma post #####
+    a<-delta1+delta2+1/theta.hat[k]
+    b<-1/theta.hat[k]+
+      sapply(Y1,Lambda01.fct,lambda01.hat=lambda01.hat)+sapply(Y1,Lambda02.fct,lambda02.hat=lambda02.hat)+
+      delta1*(sapply(Y2,Lambda03.fct,lambda03.hat=lambda03.hat)-sapply(Y1,Lambda03.fct,lambda03.hat=lambda03.hat))
+    
+    gamma.post<-a/b 
+    log.gamma.post<-digamma(a)-log(b)
+    
+    ######################################### M step #########################################
+    ##### lambda01.hat.next, lambda02.hat.next , lambda03.hat.next only at event times #####
+    lambda01.hat.next<-sapply(unique.ill.t,        lambda01.fct,gamma.post=gamma.post)
+    lambda02.hat.next<-sapply(unique.die.noill.t,  lambda02.fct,gamma.post=gamma.post)
+    lambda03.hat.next<-sapply(unique.die.withill.t,lambda03.fct,gamma.post=gamma.post)
+    
+    
+    #theta.hat.next<-1/alpha.tmp
+    diff2<-max((abs((lambda01.hat.next-lambda01.hat)/lambda01.hat)),
+               (abs((lambda02.hat.next-lambda02.hat)/lambda02.hat)),
+               (abs((lambda03.hat.next-lambda03.hat)/lambda03.hat)))
+    
+    ####### print #################### 
+    margin.like<-sum(d.ill.j*log(lambda01.hat.next))+
+      sum(d.die.noill.j*log(lambda02.hat.next))+
+      sum(d.die.withill.j*log(lambda03.hat.next))+
+      sum(delta1*delta2*log(1+theta.hat[k]))-
+      sum((1/theta.hat[k]+delta1+delta2)*log(1+theta.hat[k]*(sapply(Y1,Lambda01.fct,lambda01.hat=lambda01.hat.next)
+                                                                +sapply(Y1,Lambda02.fct,lambda02.hat=lambda02.hat.next)
+                                                                +delta1*(sapply(Y2,Lambda03.fct,lambda03.hat=lambda03.hat.next)
+                                                                         -sapply(Y1,Lambda03.fct,lambda03.hat=lambda03.hat.next)))))
+  
+    
+    cat("\n iteration-",EM.iter,": margin.like=", margin.like, ", theta=", theta.hat[k],  sep="")
+    
+    EM.iter<-EM.iter+1;
+    lambda01.hat<-lambda01.hat.next
+    lambda02.hat<-lambda02.hat.next
+    lambda03.hat<-lambda03.hat.next
+    
+  }#End of EM-loop
+  
+  
+  like.theta<-sum(d.ill.j*log(lambda01.hat))+
+    sum(d.die.noill.j*log(lambda02.hat))+
+    sum(d.die.withill.j*log(lambda03.hat))+
+    sum(delta1*delta2*log(1+theta.hat[k]))-
+    sum((1/theta.hat[k]+delta1+delta2)*log(1+theta.hat[k]*(sapply(Y1,Lambda01.fct,lambda01.hat=lambda01.hat)
+                                                           +sapply(Y1,Lambda02.fct,lambda02.hat=lambda02.hat.next)
+                                                           +delta1*(sapply(Y2,Lambda03.fct,lambda03.hat=lambda03.hat)
+                                                                   -sapply(Y1,Lambda03.fct,lambda03.hat=lambda03.hat)   ))))
+  
+  output[1,k]<-theta.hat[k]
+  output[2,k]<-like.theta
+  
+  cat("\n********************* Finish EM *********************") 
+  
+}# end theta k loop
+
+max.num<-which.max(output[2,])
+
+plot(output[1,],output[2,],xlab=expression(paste(theta)),ylab="Profile likelihood",lwd=2,type="l")
+abline(v=output[1,max.num],col="red",lwd=2,lty=2)
+
+}
+
+#profile.unrestricted.fct(obs.data.original)
+
+##################################################################################
+##################################################################################
+# Step 2.2.1. if internal maximizer, then unrestricted model NPMLE
+##################################################################################
+##################################################################################
+
+
+# write R fct 
+NPMLE.unrestricted.fct<-function(obs.data.original){
+  
+obs.data<-obs.data.original
+n<-dim(obs.data)[1]
+
+Y1<-obs.data$Y1
+Y2<-obs.data$Y2
+delta1<-obs.data$delta1
+delta2<-obs.data$delta2
+
+ill.data<-obs.data[obs.data$delta1==1,]
+ill.data.sort<-ill.data[order(ill.data$Y1),]
+unique.ill.t<-unique(ill.data.sort$Y1)
+n.unique.ill.t<-length(unique.ill.t)
+
+die.noill.data<-obs.data[obs.data$delta2==1 & obs.data$delta1==0,]
+die.noill.data.sort<-die.noill.data[order(die.noill.data$Y2),]
+unique.die.noill.t<-unique(die.noill.data.sort$Y2)
+n.unique.die.noill.t<-length(unique.die.noill.t)
+
+die.withill.data<-obs.data[obs.data$delta2==1 & obs.data$delta1==1,]
+die.withill.data.sort<-die.withill.data[order(die.withill.data$Y2),]
+unique.die.withill.t<-unique(die.withill.data.sort$Y2)
+n.unique.die.withill.t<-length(unique.die.withill.t)
+
+##### non-parametric Lambda01, Lambda02, Lambda03, lambda01, lambda02, lambda03 #####
+Lambda01.fct<-function(t,lambda01.hat){sum(lambda01.hat[unique.ill.t-t        <tol.equal])}
+Lambda02.fct<-function(t,lambda02.hat){sum(lambda02.hat[unique.die.noill.t-t  <tol.equal])}
+Lambda03.fct<-function(t,lambda03.hat){sum(lambda03.hat[unique.die.withill.t-t<tol.equal])}
+
+lambda01.fct<-function(t,gamma.post){if(sum(delta1*(abs(Y1-t)<=tol.equal))>tol.equal)
+  return(sum(delta1*(abs(Y1-t)<=tol.equal))/sum(gamma.post*as.numeric(Y1>=t)))
+  else 0}  
+lambda02.fct<-function(t,gamma.post){if(sum((1-delta1)*delta2*(abs(Y2-t)<=tol.equal))>tol.equal)
+  return(sum( (1-delta1)*delta2*(abs(Y2-t)<=tol.equal) )/sum( gamma.post*as.numeric(Y1>=t)) )
+  else 0}
+lambda03.fct<-function(t,gamma.post){if(sum(delta1*delta2*(abs(Y2-t)<=tol.equal))>tol.equal)
+  return(sum( delta1*delta2*(abs(Y2-t)<=tol.equal) )/sum(gamma.post*delta1*(as.numeric(Y2>=t)-as.numeric(Y1>=t)) ) )
+  else 0}
+
+##### initial values of lambda01, lambda02, theta.hat #####
+
+d.ill.j<-sapply(unique.ill.t, function(t){sum(delta1*(abs(Y1-t)<tol.equal))})
+y.ill.j<-sapply(unique.ill.t, function(t){sum(as.numeric(Y1-t>(-tol.equal)))})
+lambda01.start<-d.ill.j/y.ill.j
+
+Y2.noill <-Y2[delta1==0]
+d.die.noill.j<-sapply(unique.die.noill.t, function(t){sum((1-delta1)*delta2*(abs(Y2-t)<=tol.equal))})
+y.die.noill.j<-sapply(unique.die.noill.t, function(t){sum(as.numeric(Y2.noill-t>(-tol.equal)))})
+lambda02.start<-d.die.noill.j/y.die.noill.j
+
+Y2.withill <-Y2[delta1==1]
+d.die.withill.j<-sapply(unique.die.withill.t, function(t){sum(delta1*delta2*(abs(Y2-t)<=tol.equal))})
+y.die.withill.j<-sapply(unique.die.withill.t, function(t){sum(as.numeric(Y2.withill-t>(-tol.equal)))})
+lambda03.start<-d.die.withill.j/y.die.withill.j
+
+lambda01.hat<-lambda01.start
+lambda02.hat<-lambda02.start
+lambda03.hat<-lambda03.start
+theta.hat<-theta.start
+
+diff2<-10
+EM.iter<-1
+
+cat("Start EM-iteration \n")
+while (diff2>tol.EM & EM.iter<3000){# start EM-loop
+  
+  ######################################### E step #########################################
+  ##### gamma post and log gamma post #####
+  a<-delta1+delta2+1/theta.hat
+  b<-1/theta.hat+
+    sapply(Y1,Lambda01.fct,lambda01.hat=lambda01.hat)+sapply(Y1,Lambda02.fct,lambda02.hat=lambda02.hat)+
+    delta1*(sapply(Y2,Lambda03.fct,lambda03.hat=lambda03.hat)-sapply(Y1,Lambda03.fct,lambda03.hat=lambda03.hat))
+  
+  gamma.post<-a/b 
+  log.gamma.post<-digamma(a)-log(b)
+  
+  ######################################### M step #########################################
+  ##### lambda01.hat.next, lambda02.hat.next , lambda03.hat.next only at event times #####
+  lambda01.hat.next<-sapply(unique.ill.t,        lambda01.fct,gamma.post=gamma.post)
+  lambda02.hat.next<-sapply(unique.die.noill.t,  lambda02.fct,gamma.post=gamma.post)
+  lambda03.hat.next<-sapply(unique.die.withill.t,lambda03.fct,gamma.post=gamma.post)
+  
+  ##### theta.hat.next
+  B<-mean(log.gamma.post-gamma.post);  B.star<-B+1
+  
+  alpha.fct<-function(B.star){
+    if ((-9-12*B.star)>=tol.equal) 
+      return ((-3-sqrt(-9-12*B.star))/(12*B.star))
+    else return(-3/(12*B.star))
+  }
+  
+  alpha.tmp<-alpha.fct(B.star)
+  #alpha.tmp<-(-3-sqrt(-9-12*B.star))/(12*B.star)
+  
+  diff1<-10;                      
+  while (diff1>tol.NR){                            ### start NR-loop
+    U.alpha<- log(alpha.tmp)+1-digamma(alpha.tmp) + B
+    U.alpha.prime<- 1/alpha.tmp-trigamma(alpha.tmp)
+    step.alpha<-U.alpha/U.alpha.prime
+    
+    while(alpha.tmp-step.alpha<tol.equal){
+      step.alpha<-step.alpha/2
+    }
+    
+    alpha.tmp<-alpha.tmp-step.alpha
+    diff1<-abs(step.alpha)+abs(U.alpha)
+  }	                                               ### end of NR-loop
+  
+  theta.hat.next<-1/alpha.tmp
+
+  diff2<-max(abs((lambda01.hat-lambda01.hat.next)/lambda01.hat))+
+         max(abs((lambda02.hat-lambda02.hat.next)/lambda02.hat))+
+         max(abs((lambda03.hat-lambda03.hat.next)/lambda03.hat))+
+             abs((theta.hat.next-theta.hat)/theta.hat)
+  
+  ####### print #################### 
+    margin.like<-sum(d.ill.j*log(lambda01.hat.next))+
+    sum(d.die.noill.j*log(lambda02.hat.next))+
+    sum(d.die.withill.j*log(lambda03.hat.next))+
+    sum(delta1*delta2*log(1+theta.hat.next))-
+    sum((1/theta.hat.next+delta1+delta2)*log(1+theta.hat.next*(sapply(Y1,Lambda01.fct,lambda01.hat=lambda01.hat.next)
+                                                              +sapply(Y1,Lambda02.fct,lambda02.hat=lambda02.hat.next)
+                                                              +delta1*(sapply(Y2,Lambda03.fct,lambda03.hat=lambda03.hat.next)
+                                                                    -sapply(Y1,Lambda03.fct,lambda03.hat=lambda03.hat.next)))))
+  
+  
+  ####### print #################### 
+  cat("\n iteration-",EM.iter,": margin.like=", margin.like, ", theta=", theta.hat.next, sep="")
+  
+  EM.iter<-EM.iter+1;
+  theta.hat<-theta.hat.next
+  lambda01.hat<-lambda01.hat.next
+  lambda02.hat<-lambda02.hat.next
+  lambda03.hat<-lambda03.hat.next
+  
+}#End of EM-loop
+
+cat("\n********************* Finish EM *********************\n") 
+
+unrestricted.output<-list("theta"=theta.hat,
+             "lambda01"=lambda01.hat,"unique.ill.t"=unique.ill.t,
+             "lambda02"=lambda02.hat,"unique.die.noill.t"=unique.die.noill.t,
+             "lambda03"=lambda03.hat,"unique.die.withill.t"=unique.die.withill.t)
+             
+invisible(unrestricted.output)
+}
+
+#NPMLE.unrestricted<-NPMLE.unrestricted.fct(obs.data)
+#NPMLE.unrestricted
+
+##################################################################################
+##################################################################################
+# practical guideline ############################################################
+##################################################################################
+##################################################################################
+
+# read in data frame "obs.data.original" with columns "delta1", "delta2", "Y1", and "Y2"  
+
+pval<-score.test.fct(obs.data.original)
+
+if (pval>0.05) {
+  print("Since p value > 0.05, we proceed with restricted GCMM to obtain NPMLE.")
+}
+
+if (pval>0.05) {
+  NPMLE.restricted<-NPMLE.restricted.fct(obs.data)
+}
+
+if (pval<0.05) {
+  print("Since p value < 0.05, we plot the profile likelihood of theta under the unrestricted model.")
+}
+
+internal<- readline(prompt="Is there an internal maixmizer for theta? YES/NO: ")
+
+if (internal=="YES") {
+  NPMLE.unrestricted<-NPMLE.unrestricted.fct(obs.data)
+} else if (internal=="NO"){
+  print("Use alternative methods, such as parametric models or Bayesian methods.")
+} else {
+  print("Please input YES or NO.")
+}
